@@ -1,5 +1,6 @@
 extern crate cc;
 use glob::glob;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs::File, io::BufRead, io::BufReader, io::Read};
@@ -9,6 +10,12 @@ const DEFINES_CCID: [(&str, Option<&str>); 2] =
     [("HAVE_USB_CLASS_CCID", None), ("HAVE_CCID", None)];
 
 const AUX_C_FILES: [&str; 2] = ["./src/c/src.c", "./src/c/sjlj.s"];
+
+// Define the list of files you want to prefix
+const SDK_FILES_TO_PREFIX: &[&str] = &[
+    "include/os_seed.h",
+    "include/os.h",
+];
 
 const SDK_C_FILES: [&str; 9] = [
     "src/os_io_usb.c",
@@ -307,22 +314,36 @@ impl SDKBuilder {
     }
 
     pub fn gcc_toolchain(&mut self) {
-        // Find out where the arm toolchain is located
-        let output = Command::new("arm-none-eabi-gcc")
-            .arg("-print-sysroot")
-            .output()
-            .ok();
-        let sysroot = output
-            .as_ref()
-            .and_then(|o| std::str::from_utf8(&o.stdout).ok())
-            .unwrap_or("")
-            .trim();
+        let gcc_toolchain = if cfg!(target_os = "macos") {
+            let sdk_path = Command::new("xcrun")
+                .args(["--show-sdk-path"])
+                .output()
+                .ok()
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|s| s.trim().to_string());
 
-        let gcc_toolchain = if sysroot.is_empty() {
-            String::from("/usr/include/")
+            sdk_path
+                .map(|path| format!("{}/usr/include", path))
+                .unwrap_or_else(|| {
+                    println!("cargo:warning=Could not determine macOS SDK path, using default");
+                    "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include".to_string()
+                })
         } else {
-            format!("{sysroot}/include")
+            let sysroot = Command::new("arm-none-eabi-gcc")
+                .arg("-print-sysroot")
+                .output()
+                .ok()
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+
+            if sysroot.is_empty() {
+                String::from("/usr/include/")
+            } else {
+                format!("{sysroot}/include")
+            }
         };
+
         self.gcc_toolchain = gcc_toolchain;
     }
 
@@ -400,6 +421,53 @@ impl SDKBuilder {
         self.cxdefines = cxdefines;
     }
 
+    pub fn prefix_file(file_path: &Path, prefix: &str) -> bool {
+        if !file_path.exists() {
+            println!("cargo:warning=File does not exist: {:?}", file_path);
+            return false;
+        }
+
+        let file = match fs::File::open(file_path) {
+            Ok(file) => file,
+            Err(e) => {
+                println!("cargo:warning=Unable to open file {:?}: {}", file_path, e);
+                return false;
+            }
+        };
+
+        let reader = BufReader::new(file);
+        let first_line = reader.lines().next();
+
+        // Check if the file is already prefixed
+        if let Some(Ok(line)) = first_line {
+            if line.trim() == prefix {
+                println!("cargo:warning=File already prefixed: {:?}", file_path);
+                return true;
+            }
+        }
+
+        // If not prefixed, read the entire content
+        let content = match fs::read_to_string(file_path) {
+            Ok(content) => content,
+            Err(e) => {
+                println!("cargo:warning=Unable to read file {:?}: {}", file_path, e);
+                return false;
+            }
+        };
+
+        // Prepend the prefix
+        let new_content = format!("{}\n{}", prefix, content);
+
+        // Write the new content back to the file
+        if let Err(e) = fs::write(file_path, new_content) {
+            println!("cargo:warning=Unable to write file {:?}: {}", file_path, e);
+            false
+        } else {
+            println!("cargo:rerun-if-changed={}", file_path.display());
+            true
+        }
+    }
+
     pub fn build_c_sdk(&self) {
         let mut command = cc::Build::new();
         if env::var_os("CC").is_none() {
@@ -407,12 +475,13 @@ impl SDKBuilder {
         } else {
             // Let cc::Build determine CC from the environment variable
         }
+
         command
             .files(&AUX_C_FILES)
             .files(str2path(&self.bolos_sdk, &SDK_C_FILES))
             .files(str2path(&self.bolos_sdk, &SDK_USB_FILES));
 
-        command = command
+        command
             .include(&self.gcc_toolchain)
             .include(self.bolos_sdk.join("include"))
             .include(self.bolos_sdk.join("lib_cxng/include"))
@@ -425,7 +494,9 @@ impl SDKBuilder {
             .include(
                 self.bolos_sdk
                     .join("lib_stusb/STM32_USB_Device_Library/Class/HID/Inc"),
-            )
+            );
+
+        command
             .debug(true)
             .flag("-Oz")
             .flag("-fomit-frame-pointer")
@@ -436,8 +507,28 @@ impl SDKBuilder {
             .flag("-fno-jump-tables")
             .flag("-fshort-enums")
             .flag("-mno-unaligned-access")
-            .flag("-Wno-unused-command-line-argument")
-            .clone();
+            .flag("-Wno-unused-command-line-argument");
+
+        // Adding compatibility patches for macOS
+        if cfg!(target_os = "macos") {
+            let project_root = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
+            let osx_include_path = Path::new(&project_root).join("src").join("c").join("osx");
+            
+            command.include(osx_include_path);
+            println!("cargo:warning=Added src/c/osx to include paths for macOS");
+
+            command
+                .flag("-Wno-nullability-completeness")
+                .flag("-Wno-expansion-to-defined");
+            println!("cargo:warning=Added flags to suppress nullability warnings on macOS");
+
+            // Prefix the specified files with a compatibility layer for macOS
+            let prefix = "#include \"compat.h\"";
+            for file in SDK_FILES_TO_PREFIX {
+                let file_path = self.bolos_sdk.join(file);
+                Self::prefix_file(&file_path, prefix);
+            }
+        }
 
         // #[cfg(feature = "ccid")]
         // {
@@ -465,7 +556,7 @@ impl SDKBuilder {
 
     fn generate_bindings(&self) {
         let bsdk = self.bolos_sdk.display().to_string();
-        let args = [
+        let mut args = vec![
             "--target=thumbv6m-none-eabi".to_string(), // exact target is irrelevant for bindings
             "-fshort-enums".to_string(),
             format!("-I{}", self.gcc_toolchain),
@@ -474,6 +565,14 @@ impl SDKBuilder {
             format!("-I{bsdk}/lib_stusb/STM32_USB_Device_Library/Core/Inc/"),
             format!("-I{bsdk}/lib_stusb/"),
         ];
+
+        // Add src/c/osx to include paths when on macOS
+        if cfg!(target_os = "macos") {
+            let project_root = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
+            let osx_include_path = Path::new(&project_root).join("src").join("c").join("osx");
+            args.push(format!("-I{}", osx_include_path.display()));
+            println!("cargo:warning=Added src/c/osx to include paths for macOS bindings");
+        }
 
         let headers = str2path(
             &self.bolos_sdk,

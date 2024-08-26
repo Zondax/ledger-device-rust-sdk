@@ -16,6 +16,22 @@
 extern void sample_main();
 extern void heap_init();
 
+void *__memmove_chk(void *dest, const void *src, size_t n, size_t dest_len) {
+    if (n > dest_len) {
+        // This would be a buffer overflow
+        os_sched_exit(1);
+    }
+    return memmove(dest, src, n);
+}
+
+void *__memcpy_chk(void *dest, const void *src, size_t n, size_t dest_len) {
+    if (n > dest_len) {
+        // This would be a buffer overflow
+        os_sched_exit(1);
+    }
+    return memcpy(dest, src, n);
+}
+
 struct SectionSrc;
 struct SectionDst;
 

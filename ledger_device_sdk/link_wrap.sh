@@ -28,7 +28,9 @@ llvm-objcopy --dump-section .rel.nvm_data=$OUT-nvm-reloc $OUT /dev/null || true
 cat $OUT-rodata-reloc $OUT-nvm-reloc $OUT-data-reloc > $OUT-relocs || true
 
 reloc_allocated_size="$((0x$(llvm-nm $OUT | grep _reloc_size | cut -d' ' -f1)))"
-reloc_real_size="$(stat -c %s $OUT-relocs)"
+# Use a more portable way to get file size
+reloc_real_size=$(wc -c < "$OUT-relocs")
+
 # Check that our relocations _actually_ fit.
 if [ "$reloc_real_size" -gt "$reloc_allocated_size" ]
 then
