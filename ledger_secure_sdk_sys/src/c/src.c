@@ -9,10 +9,18 @@
 #include "os_nvm.h"
 #include "os_pic.h"
 #include "checks.h"
+#include "os_print.h"
 #ifdef HAVE_BLE
   #include "ledger_ble.h"
   bolos_ux_asynch_callback_t G_io_asynch_ux_callback;
 #endif
+
+#define APP_STACK_CANARY_MAGIC 0xDEAD0031
+extern unsigned int app_stack_canary;
+
+// Commented as it is not working. _estack is not aligned, so rust lld fails to link
+//extern unsigned int _stack;
+//extern unsigned int _estack;
 
 extern void sample_main();
 extern void heap_init();
@@ -258,6 +266,56 @@ void link_pass_nvram(
 uint8_t G_io_apdu_buffer[260];
 #endif
 
+void zemu_log(const char *buf) {
+    asm volatile(
+        "movs r0, #0x04\n"
+        "movs r1, %0\n"
+        "svc      0xab\n" ::"r"(buf)
+        : "r0", "r1");
+}
+
+void handle_stack_overflow() {
+    zemu_log("!!!!!!!!!!!!!!!!!!!!!! CANARY TRIGGERED!!! STACK OVERFLOW DETECTED\n");
+}
+
+void check_app_canary() {
+    if (app_stack_canary != APP_STACK_CANARY_MAGIC) handle_stack_overflow();
+}
+
+void zemu_log_stack(const char *ctx) {
+#define STACK_SHIFT 20
+    void *p = NULL;
+    char buf[70];
+    const uint32_t availableStack = (uint32_t)((void *)&p) + STACK_SHIFT - (uint32_t)&app_stack_canary;
+
+    snprintf(buf, sizeof(buf), "|SP| %p %p (%d) : %s\n", &app_stack_canary, ((void *)&p) + STACK_SHIFT, availableStack,
+             ctx);
+    zemu_log(buf);
+    (void)ctx;
+}
+
+void zemu_log_num(const char *ctx, uint32_t num) {
+    char buf[40];
+
+    snprintf(buf, sizeof(buf), "|NUM| %d : %s\n", num, ctx);
+    zemu_log(buf);
+    (void)ctx;
+}
+
+// Commented as it is not working. _estack is not aligned, so rust lld fails to link
+/*
+void zemu_log_stack_theoretical(const char *ctx) {
+#define STACK_SHIFT 20
+    void *p = NULL;
+    char buf[70];
+    const uint32_t theoreticalStack = (uint32_t)_estack - (uint32_t)((void *)&p) + STACK_SHIFT;
+
+    snprintf(buf, sizeof(buf), "|SP| %p %p (%d) : %s\n", ((void *)&p) + STACK_SHIFT, &_estack, theoreticalStack,
+             ctx);
+    zemu_log(buf);
+    (void)ctx;
+}
+*/
 int c_main(void) {
   __asm volatile("cpsie i");
 
@@ -333,7 +391,8 @@ int c_main(void) {
     #if !defined(HAVE_BOLOS) && defined(HAVE_PENDING_REVIEW_SCREEN)
         check_audited_app();
     #endif // !defined(HAVE_BOLOS) && defined(HAVE_PENDING_REVIEW_SCREEN)
-        
+
+        app_stack_canary = APP_STACK_CANARY_MAGIC;
         heap_init();
         sample_main();
       }

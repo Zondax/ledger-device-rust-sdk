@@ -59,6 +59,13 @@ macro_rules! set_panic {
 
 extern "C" {
     fn c_main();
+    fn zemu_log(s: *const u8);
+}
+
+pub fn zlog(_msg: &str) {
+    unsafe {
+        zemu_log(_msg.as_bytes().as_ptr());
+    }
 }
 
 #[link_section = ".boot"]

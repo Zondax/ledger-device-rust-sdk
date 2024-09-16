@@ -11,7 +11,7 @@ const DEFINES_CCID: [(&str, Option<&str>); 2] =
 
 const AUX_C_FILES: [&str; 2] = ["./src/c/src.c", "./src/c/sjlj.s"];
 
-const SDK_C_FILES: [&str; 8] = [
+const SDK_C_FILES: [&str; 9] = [
     "src/os_io_usb.c",
     "src/pic.c",
     "src/checks.c",
@@ -20,6 +20,7 @@ const SDK_C_FILES: [&str; 8] = [
     "src/svc_call.s",
     "src/svc_cx_call.s",
     "src/syscalls.c",
+    "src/os_printf.c",
 ];
 
 const SDK_USB_FILES: [&str; 6] = [
@@ -467,6 +468,11 @@ impl SDKBuilder {
         for define in self.cxdefines.iter() {
             command.define(define, None);
         }
+
+        // Enablong snprintf definition from os_printf C SDK
+        command.define("HAVE_SPRINTF", None);
+        command.define("HAVE_SNPRINTF_FORMAT_U", None);
+
 
         command.compile("ledger-secure-sdk");
 
