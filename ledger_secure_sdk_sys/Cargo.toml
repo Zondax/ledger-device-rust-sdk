@@ -13,7 +13,7 @@ cc = "1.0.73"
 glob = "0.3.1"
 
 [dependencies]
-embedded-alloc = { version = "0.5.1", optional = true }
+embedded-alloc = { git = "https://github.com/Zondax/embedded-alloc", rev = "effffbeb6f4cbc653dd0ea1cef08ce49f69a5cf5", optional = true }
 critical-section = { version = "1.1.2", optional = true }
 
 [features]
